@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fedora-signal-router"
+version = "0.1.0"
+description = "Local, read-only activity collector with source evidence"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+fsr = "fsr.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fsr*"]

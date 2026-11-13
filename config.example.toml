@@ -1,0 +1,10 @@
+# Copy to config.toml. Keep config and collected activity out of Git.
+database = "data/fsr.sqlite"
+
+[[sources]]
+name = "fedora-docs-public"
+kind = "discourse"
+url = "https://discussion.fedoraproject.org/tag/docs-team/337.json"
+
+# This is one selected public tag, not a subscription to all Fedora activity.
+# RSS 2.0 and Atom feeds are supported with kind = "rss".
