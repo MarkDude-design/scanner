@@ -188,7 +188,8 @@ def parse(source, payload):
         if not native:
             raise ValueError('Feed item lacks a stable GUID/ID or link')
         p = urlsplit(source['url'])
-        origin = urlunsplit((p.scheme, p.netloc, '', '', ''))
+        # Feed IDs are scoped to a channel, not to the hosting site.
+        origin = urlunsplit((p.scheme, p.netloc, p.path or '/', '', ''))
         yield dict(native_id=native, origin=origin,
                    title=title if is_atom else plain(title), body=body if is_atom else plain(body),
                    url=link, occurred_at=stamp(date), raw=ET.tostring(row, encoding='unicode'))
@@ -230,6 +231,13 @@ def sync_one(db, source, fetcher=fetch):
     existing = db.execute('SELECT * FROM sources WHERE name=?', (name,)).fetchone()
     if existing and existing['identity'] != identity:
         raise ValueError('Source definition changed; use a new source name')
+    if source['kind'] == 'rss':
+        p = urlsplit(source['url'])
+        legacy_origin = urlunsplit((p.scheme, p.netloc, '', '', ''))
+        if db.execute('SELECT 1 FROM items WHERE kind=? AND origin=? LIMIT 1',
+                      ('rss', legacy_origin)).fetchone():
+            raise RuntimeError('Legacy feed namespace: back up the database and use a new database; '
+                               'old feed IDs cannot be safely reassigned automatically')
     with db:
         db.execute('INSERT OR IGNORE INTO sources(name,identity) VALUES (?,?)', (name, identity))
     cursor = json.loads(existing['cursor']) if existing else {}
