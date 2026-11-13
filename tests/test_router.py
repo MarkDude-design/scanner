@@ -83,6 +83,43 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM items').fetchone()[0], 1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM source_items').fetchone()[0], 2)
 
+    def test_same_host_feeds_do_not_share_ids(self):
+        for format in ('rss', 'atom'):
+            with self.subTest(format=format):
+                sources = [{'name': format + n, 'kind': 'rss',
+                            'url': 'https://example.invalid/' + format + '/' + n}
+                           for n in ('a', 'b')]
+                def payload(source, cursor):
+                    title = source['name']
+                    if format == 'rss':
+                        xml = f'<rss><channel><item><guid>1</guid><title>{title}</title></item></channel></rss>'
+                    else:
+                        xml = f'<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>1</id><title>{title}</title></entry></feed>'
+                    return xml.encode(), {}
+                self.assertEqual([r['changed'] for r in sync(self.db, sources, payload)], [1, 1])
+                self.assertEqual([r['changed'] for r in sync(self.db, sources, payload)], [0, 0])
+                for source in sources:
+                    row = self.db.execute('SELECT title FROM items WHERE origin=?', (source['url'],)).fetchone()
+                    self.assertEqual(row['title'], source['name'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM items').fetchone()[0], 4)
+
+    def test_legacy_feed_namespace_requires_explicit_rebuild(self):
+        source = {'name': 'feed', 'kind': 'rss', 'url': 'https://example.invalid/feed'}
+        payload = b'<rss><channel><item><guid>1</guid><title>Old</title></item></channel></rss>'
+        sync(self.db, [source], self.fetcher(payload))
+        with self.db:
+            self.db.execute("UPDATE items SET origin='https://example.invalid' WHERE kind='rss'")
+        sent = []
+        def fetcher(source, cursor):
+            sent.append(source)
+            return payload, {}
+        result = sync(self.db, [source], fetcher)[0]
+        self.assertFalse(result['ok'])
+        self.assertIn('Legacy feed namespace', result['error'])
+        self.assertEqual(sent, [])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM items').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM revisions').fetchone()[0], 1)
+
     def test_counter_change_is_preserved_without_new_reading_task(self):
         source = {'name': 'topics', 'kind': 'discourse', 'url': 'https://example.invalid/latest.json'}
         topic = {'id': 123, 'title': 'Topic', 'views': 10,

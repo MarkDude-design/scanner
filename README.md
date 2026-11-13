@@ -48,7 +48,8 @@ Live sources can rate-limit or be unreachable; no automatic retries are made.
   Atom XHTML text constructs). Other XML encodings are explicitly refused.
 - Incremental conditional GET using persisted ETag/Last-Modified when supplied.
 - Stable native IDs, idempotent repeated syncs, and deduplication of an item
-  appearing in overlapping watches of the same adapter kind/origin.
+  appearing in overlapping watches of the same adapter kind/origin. RSS/Atom
+  IDs are scoped to the full configured feed URL; Discourse IDs to the host.
 - A delayed watch cannot overwrite an item with a strictly older known source
   activity timestamp. Its raw evidence is still retained. Equal/unknown source
   timestamps cannot establish freshness; that ambiguity remains a limitation.
@@ -81,6 +82,15 @@ sources you intend to watch; this version accepts clean HTTPS URLs without
 embedded credentials or query parameters. Public source content is untrusted
 data. Don't publish an aggregate personal activity database merely because its
 individual source pages were public.
+
+Source configs are trusted operator input. Hostnames are not restricted to
+public IP address ranges; this is not a sandbox for guest-provided source URLs.
+
+Databases created before the feed-namespace correction may contain host-scoped
+RSS/Atom IDs. Feed sync refuses those hosts before fetching: back up the old
+database and use a fresh database path. Existing evidence is not deleted or
+automatically reassigned; a fresh bounded fetch cannot recover missing history.
+Discussion-only databases are unaffected.
 
 Each redirect is checked against that URL policy before it is followed. XML
 is UTF-8 only and DTD/entity declarations are refused before parsing.
