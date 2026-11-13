@@ -1,0 +1,10 @@
+# Copy to config.toml. Keep config and collected activity out of Git.
+database = "data/fsr.sqlite"
+
+[[sources]]
+name = "fedora-discussion-public-topics"
+kind = "discourse"
+url = "https://discussion.fedoraproject.org/latest.json"
+
+# Prefer a selected public category/tag endpoint once you choose the watch scope.
+# RSS 2.0 and Atom feeds are supported with kind = "rss".

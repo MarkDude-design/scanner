@@ -1,0 +1,5 @@
+database = "data/demo.sqlite"
+[[sources]]
+name = "synthetic-demo"
+kind = "fixture"
+path = "examples/demo.json"
