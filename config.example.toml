@@ -2,9 +2,9 @@
 database = "data/fsr.sqlite"
 
 [[sources]]
-name = "fedora-discussion-public-topics"
+name = "fedora-docs-public"
 kind = "discourse"
-url = "https://discussion.fedoraproject.org/latest.json"
+url = "https://discussion.fedoraproject.org/tag/docs-team/337.json"
 
-# Prefer a selected public category/tag endpoint once you choose the watch scope.
+# This is one selected public tag, not a subscription to all Fedora activity.
 # RSS 2.0 and Atom feeds are supported with kind = "rss".

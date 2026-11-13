@@ -210,19 +210,33 @@ def sync_one(db, source, fetcher=fetch):
             db.execute('INSERT OR IGNORE INTO snapshots VALUES (?,?,?,?)', (name, digest, when, payload))
         for item in entries:
             raw = json.dumps(item['raw'], ensure_ascii=False, sort_keys=True)
-            digest = hashlib.sha256(raw.encode()).hexdigest()
+            raw_digest = hashlib.sha256(raw.encode()).hexdigest()
+            # Preserve counter-only changes as evidence, without making them
+            # fresh reading tasks. last_posted_at is normalized to occurred_at,
+            # so a new reply still counts even when the title is unchanged.
+            fields = ('title', 'body', 'url', 'occurred_at')
+            signal = {key: item[key] for key in fields}
+            digest = hashlib.sha256(json.dumps(signal, sort_keys=True).encode()).hexdigest()
             key = (source['kind'], item['origin'], item['native_id'])
-            old = db.execute('SELECT id,hash FROM items WHERE kind=? AND origin=? AND native_id=?', key).fetchone()
-            if not old or old['hash'] != digest:
+            old = db.execute('SELECT * FROM items WHERE kind=? AND origin=? AND native_id=?', key).fetchone()
+            previous = {field: old[field] for field in fields} if old else None
+            if previous:
+                previous['occurred_at'] = stamp(previous['occurred_at'])
+            if previous != signal:
                 db.execute('''INSERT INTO items(kind,origin,native_id,title,body,url,occurred_at,changed_at,hash)
                   VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(kind,origin,native_id) DO UPDATE SET
                   title=excluded.title,body=excluded.body,url=excluded.url,occurred_at=excluded.occurred_at,
                   changed_at=excluded.changed_at,hash=excluded.hash''',
                   (*key, item['title'], item['body'], item['url'], item['occurred_at'], when, digest))
                 changed += 1
+            else:
+                # Upgrade the pre-review raw hash/date representation without
+                # changing observed-change time or manufacturing new activity.
+                db.execute('UPDATE items SET hash=?,occurred_at=? WHERE id=?',
+                           (digest, item['occurred_at'], old['id']))
             item_id = db.execute('SELECT id FROM items WHERE kind=? AND origin=? AND native_id=?', key).fetchone()['id']
             db.execute('INSERT OR IGNORE INTO source_items VALUES (?,?)', (name, item_id))
-            db.execute('INSERT OR IGNORE INTO revisions VALUES (?,?,?,?)', (item_id, digest, when, raw))
+            db.execute('INSERT OR IGNORE INTO revisions VALUES (?,?,?,?)', (item_id, raw_digest, when, raw))
         db.execute('UPDATE sources SET cursor=?,last_success=?,last_error=NULL WHERE name=?',
                    (json.dumps(next_cursor), when, name))
     return changed

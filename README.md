@@ -23,8 +23,9 @@ Fedora activity. Optional installation: `python -m pip install -e .`, then `fsr`
 
 ## Watch selected public activity
 
-Copy `config.example.toml` to the ignored `config.toml`, choose a public
-Discussion latest/category/tag JSON endpoint or an RSS 2.0/Atom feed, then:
+Copy `config.example.toml` to the ignored `config.toml`. It starts with one
+public Docs tag, tested as a read-only topic-list fetch on 2026-11-13. You can
+choose another public Discussion category/tag JSON endpoint or RSS/Atom feed:
 
 ```sh
 python -m fsr sources
@@ -36,8 +37,8 @@ python -m fsr recent --json > /tmp/fsr-export.json
 
 `--config PATH` goes before the command. Relative database/fixture paths resolve
 beside that config. `sync SOURCE_NAME` and `recent --source SOURCE_NAME` restrict
-the view. The example latest endpoint is a starting point, not a subscription
-to all Fedora activity. Choose the small set of watches you actually want.
+the view. The example is a starting point, not a subscription to all Fedora
+activity. Choose the small set of watches you actually want.
 Live sources can rate-limit or be unreachable; no automatic retries are made.
 `doctor` checks local configuration/database only; `sync` checks remote access.
 
@@ -49,6 +50,9 @@ Live sources can rate-limit or be unreachable; no automatic retries are made.
   appearing in overlapping watches of the same adapter kind/origin.
 - Local raw snapshots, item revisions and source links. Updates retain prior
   evidence; source data and local fetch/change times remain distinct.
+- Counter-only changes (views, likes, reply counts) are retained in raw evidence
+  but do not become new reading tasks. A changed title/body/link or source
+  activity timestamp does. A new reply updates Discourse's last-posted time.
 - Transactional item/cursor updates; a malformed source cannot advance the
   successful cursor or erase its old records. One source failure does not block
   another. Status records failures without printing response bodies.

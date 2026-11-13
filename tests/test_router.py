@@ -79,6 +79,29 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM items').fetchone()[0], 1)
         self.assertEqual(self.db.execute('SELECT count(*) FROM source_items').fetchone()[0], 2)
 
+    def test_counter_change_is_preserved_without_new_reading_task(self):
+        source = {'name': 'topics', 'kind': 'discourse', 'url': 'https://example.invalid/latest.json'}
+        topic = {'id': 123, 'title': 'Topic', 'views': 10,
+                 'last_posted_at': '2026-11-13T10:00:00Z'}
+        def payload():
+            return json.dumps({'topic_list': {'topics': [topic]}}).encode()
+        self.assertEqual(sync(self.db, [source], self.fetcher(payload()))[0]['changed'], 1)
+        before = self.db.execute('SELECT changed_at FROM items').fetchone()[0]
+        topic['views'] = 11
+        self.assertEqual(sync(self.db, [source], self.fetcher(payload()))[0]['changed'], 0)
+        self.assertEqual(self.db.execute('SELECT changed_at FROM items').fetchone()[0], before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM revisions').fetchone()[0], 2)
+        topic['last_posted_at'] = '2026-11-13T11:00:00Z'
+        self.assertEqual(sync(self.db, [source], self.fetcher(payload()))[0]['changed'], 1)
+
+    def test_old_raw_hash_does_not_create_a_false_migration_alert(self):
+        sync(self.db, [self.source], self.fetcher(self.payload()))
+        before = self.db.execute('SELECT changed_at FROM items').fetchone()[0]
+        with self.db:
+            self.db.execute("UPDATE items SET hash='legacy-raw-hash'")
+        self.assertEqual(sync(self.db, [self.source], self.fetcher(self.payload()))[0]['changed'], 0)
+        self.assertEqual(self.db.execute('SELECT changed_at FROM items').fetchone()[0], before)
+
     def test_rss_and_atom_and_entity_refusal(self):
         source = {'name': 'feed', 'kind': 'rss', 'url': 'https://example.invalid/feed'}
         rss = b'<rss version="2.0"><channel><item><guid>x</guid><title>Example</title><description>&lt;p&gt;Body&lt;/p&gt;</description></item></channel></rss>'
