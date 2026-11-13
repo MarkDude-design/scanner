@@ -1,6 +1,7 @@
 """Read-only snapshot adapters and transactional, evidence-preserving storage."""
 import hashlib
 import json
+import re
 import sqlite3
 import tomllib
 from datetime import datetime, timezone
@@ -9,7 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 import xml.etree.ElementTree as ET
 
 MAX_BYTES = 2 * 1024 * 1024
@@ -24,6 +25,13 @@ def public_url(value):
     if p.scheme != 'https' or not p.hostname or p.username or p.password or p.query or p.fragment:
         raise ValueError('Use an explicit HTTPS URL without credentials, query or fragment')
     return value
+
+
+class CleanRedirect(HTTPRedirectHandler):
+    """Validate every resolved redirect target before urllib sends a request."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def config(path):
@@ -89,6 +97,18 @@ def plain(value):
     return ' '.join(' '.join(parser.parts).split())
 
 
+def atom_text(element):
+    if element is None:
+        return ''
+    kind = element.get('type', 'text')
+    if kind in ('xhtml', 'application/xhtml+xml'):
+        return ' '.join(' '.join(element.itertext()).split())
+    value = element.text or ''
+    if kind in ('html', 'text/html'):
+        return plain(value)
+    return ' '.join(value.split())
+
+
 def stamp(value):
     """Normalize a known source date; original date remains in raw evidence."""
     if not isinstance(value, str) or not value:
@@ -128,11 +148,20 @@ def parse(source, payload):
                        occurred_at=stamp(row.get('updated_at') or row.get('last_posted_at') or row.get('created_at')),
                        raw=row)
         return
-    # XML is size bounded and DTD/entity declarations refused before parsing.
-    upper = payload.upper()
-    if b'<!DOCTYPE' in upper or b'<!ENTITY' in upper:
+    # Only UTF-8 XML is supported. Decode before declaration checks; refuse
+    # NULs/other declared encodings so UTF-16 cannot bypass an ASCII-byte scan.
+    xml = payload.decode('utf-8-sig')
+    if '\x00' in xml:
+        raise ValueError('Only UTF-8 XML is supported')
+    declaration = re.match(r'\s*<\?xml\b[^?]*\?>', xml, re.IGNORECASE)
+    if declaration:
+        encoding = re.search(r'''\bencoding\s*=\s*["']([^"']+)["']''', declaration.group(), re.IGNORECASE)
+        if encoding and encoding.group(1).lower() not in ('utf-8', 'utf8'):
+            raise ValueError('Only UTF-8 XML is supported')
+    upper = xml.upper()
+    if '<!DOCTYPE' in upper or '<!ENTITY' in upper:
         raise ValueError('DTD/entity declarations are not accepted')
-    root = ET.fromstring(payload)
+    root = ET.fromstring(xml)
     atom = '{http://www.w3.org/2005/Atom}'
     if root.tag == 'rss':
         rows = root.findall('./channel/item')
@@ -146,8 +175,11 @@ def parse(source, payload):
             links = row.findall(atom + 'link')
             link = next((x.get('href', '') for x in links if x.get('rel', 'alternate') == 'alternate'), '')
             native = row.findtext(atom + 'id') or link
-            title = row.findtext(atom + 'title', '')
-            body = row.findtext(atom + 'content') or row.findtext(atom + 'summary', '')
+            title = atom_text(row.find(atom + 'title'))
+            content = row.find(atom + 'content')
+            if content is None:
+                content = row.find(atom + 'summary')
+            body = atom_text(content)
             date = row.findtext(atom + 'updated') or row.findtext(atom + 'published')
         else:
             link = row.findtext('link', '')
@@ -157,7 +189,8 @@ def parse(source, payload):
             raise ValueError('Feed item lacks a stable GUID/ID or link')
         p = urlsplit(source['url'])
         origin = urlunsplit((p.scheme, p.netloc, '', '', ''))
-        yield dict(native_id=native, origin=origin, title=plain(title), body=plain(body),
+        yield dict(native_id=native, origin=origin,
+                   title=title if is_atom else plain(title), body=body if is_atom else plain(body),
                    url=link, occurred_at=stamp(date), raw=ET.tostring(row, encoding='unicode'))
 
 
@@ -174,8 +207,9 @@ def fetch(source, cursor):
     if cursor.get('modified'):
         headers['If-Modified-Since'] = cursor['modified']
     try:
-        with urlopen(Request(public_url(source['url']), headers=headers, method='GET'), timeout=15) as response:
-            # A redirect must still have a clean HTTPS destination.
+        opener = build_opener(CleanRedirect())
+        with opener.open(Request(public_url(source['url']), headers=headers, method='GET'), timeout=15) as response:
+            # Defense in depth: every redirect has already been checked.
             public_url(response.url)
             payload = response.read(MAX_BYTES + 1)
             if len(payload) > MAX_BYTES:
@@ -222,14 +256,19 @@ def sync_one(db, source, fetcher=fetch):
             previous = {field: old[field] for field in fields} if old else None
             if previous:
                 previous['occurred_at'] = stamp(previous['occurred_at'])
-            if previous != signal:
+            # Delayed overlapping watches must not roll a known newer source
+            # activity version backwards. Retain stale raw evidence below.
+            is_stale = bool(previous and previous['occurred_at'] and item['occurred_at'] and
+                            datetime.fromisoformat(item['occurred_at']) <
+                            datetime.fromisoformat(previous['occurred_at']))
+            if not is_stale and previous != signal:
                 db.execute('''INSERT INTO items(kind,origin,native_id,title,body,url,occurred_at,changed_at,hash)
                   VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(kind,origin,native_id) DO UPDATE SET
                   title=excluded.title,body=excluded.body,url=excluded.url,occurred_at=excluded.occurred_at,
                   changed_at=excluded.changed_at,hash=excluded.hash''',
                   (*key, item['title'], item['body'], item['url'], item['occurred_at'], when, digest))
                 changed += 1
-            else:
+            elif not is_stale:
                 # Upgrade the pre-review raw hash/date representation without
                 # changing observed-change time or manufacturing new activity.
                 db.execute('UPDATE items SET hash=?,occurred_at=? WHERE id=?',

@@ -44,10 +44,14 @@ Live sources can rate-limit or be unreachable; no automatic retries are made.
 
 ## What this slice does
 
-- Fixture, public Discourse topic-list JSON, RSS and Atom adapters.
+- Fixture, public Discourse topic-list JSON, UTF-8 RSS and Atom adapters (including
+  Atom XHTML text constructs). Other XML encodings are explicitly refused.
 - Incremental conditional GET using persisted ETag/Last-Modified when supplied.
 - Stable native IDs, idempotent repeated syncs, and deduplication of an item
   appearing in overlapping watches of the same adapter kind/origin.
+- A delayed watch cannot overwrite an item with a strictly older known source
+  activity timestamp. Its raw evidence is still retained. Equal/unknown source
+  timestamps cannot establish freshness; that ambiguity remains a limitation.
 - Local raw snapshots, item revisions and source links. Updates retain prior
   evidence; source data and local fetch/change times remain distinct.
 - Counter-only changes (views, likes, reply counts) are retained in raw evidence
@@ -77,6 +81,9 @@ sources you intend to watch; this version accepts clean HTTPS URLs without
 embedded credentials or query parameters. Public source content is untrusted
 data. Don't publish an aggregate personal activity database merely because its
 individual source pages were public.
+
+Each redirect is checked against that URL policy before it is followed. XML
+is UTF-8 only and DTD/entity declarations are refused before parsing.
 
 ## Validation and next build
 

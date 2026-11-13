@@ -4,9 +4,13 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from email.message import Message
+from urllib.request import BaseHandler, build_opener
+from urllib.response import addinfourl
 
 from fsr.cli import main
-from fsr.core import connect, parse, public_url, stamp, sync
+from fsr.core import connect, fetch, parse, public_url, stamp, sync
 
 
 class RouterTests(unittest.TestCase):
@@ -94,6 +98,75 @@ class RouterTests(unittest.TestCase):
         topic['last_posted_at'] = '2026-11-13T11:00:00Z'
         self.assertEqual(sync(self.db, [source], self.fetcher(payload()))[0]['changed'], 1)
 
+    def test_stale_overlapping_watch_cannot_roll_back_fresh_item(self):
+        a = {'name': 'a', 'kind': 'discourse', 'url': 'https://example.invalid/a.json'}
+        b = dict(a, name='b', url='https://example.invalid/b.json')
+        def payload(title, date):
+            return json.dumps({'topic_list': {'topics': [
+                {'id': 123, 'title': title, 'last_posted_at': date}]}}).encode()
+        old = payload('Old', '2026-11-13T10:00:00Z')
+        new = payload('New', '2026-11-13T11:00:00Z')
+        sync(self.db, [a, b], self.fetcher(old))
+        sync(self.db, [a], self.fetcher(new))
+        before = self.db.execute('SELECT changed_at FROM items').fetchone()[0]
+        self.assertEqual(sync(self.db, [b], self.fetcher(old))[0]['changed'], 0)
+        sync(self.db, [a], lambda s, c: (None, c))
+        row = self.db.execute('SELECT title,occurred_at,changed_at FROM items').fetchone()
+        self.assertEqual(row['title'], 'New')
+        self.assertEqual(row['occurred_at'], '2026-11-13T11:00:00+00:00')
+        self.assertEqual(row['changed_at'], before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM revisions').fetchone()[0], 2)
+
+    def test_atom_xhtml_nested_content_and_edits(self):
+        source = {'name': 'atom', 'kind': 'rss', 'url': 'https://example.invalid/feed'}
+        def payload(word):
+            return ('<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>x</id>'
+                    '<title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Actual title</div></title>'
+                    '<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Actual <b>'
+                    + word + '</b></p></div></content></entry></feed>').encode()
+        sync(self.db, [source], self.fetcher(payload('body')))
+        row = self.db.execute('SELECT title,body FROM items').fetchone()
+        self.assertEqual(row['title'], 'Actual title')
+        self.assertEqual(row['body'], 'Actual body')
+        self.assertEqual(sync(self.db, [source], self.fetcher(payload('revision')))[0]['changed'], 1)
+        self.assertEqual(self.db.execute('SELECT body FROM items').fetchone()[0], 'Actual revision')
+
+    def test_xml_declarations_refused_for_utf8_and_utf16_variants(self):
+        source = {'name': 'feed', 'kind': 'rss', 'url': 'https://example.invalid/feed'}
+        xml = '<!DOCTYPE rss [<!ENTITY x "expanded">]><rss><channel><item><guid>x</guid><title>&x;</title></item></channel></rss>'
+        for encoding in ('utf-8', 'utf-16', 'utf-16-le', 'utf-16-be'):
+            with self.subTest(encoding=encoding), self.assertRaises((ValueError, UnicodeDecodeError)):
+                list(parse(source, xml.encode(encoding)))
+        with self.assertRaises(ValueError):
+            list(parse(source, b'<?xml version="1.0" encoding="iso-8859-1"?><rss/>'))
+
+    def test_redirect_targets_are_rejected_before_transport(self):
+        for target in ('http://example.invalid/target', 'https://example.invalid/target?token=private',
+                       'https://user:pass@example.invalid/target', 'https://example.invalid/allowed'):
+            sent = []
+            class Transport(BaseHandler):
+                handler_order = 400
+                def https_open(self, req):
+                    sent.append(req.full_url)
+                    headers = Message()
+                    if req.full_url.endswith('/origin'):
+                        headers['Location'] = target
+                        code, body = 302, b''
+                    else:
+                        code, body = 200, b'{"items":[]}'
+                    response = addinfourl(io.BytesIO(body), headers, req.full_url, code)
+                    response.msg = 'Found' if code == 302 else 'OK'
+                    return response
+                http_open = https_open
+            source = {'kind': 'rss', 'url': 'https://example.invalid/origin'}
+            with patch('fsr.core.build_opener', lambda handler: build_opener(handler, Transport())):
+                if target.endswith('/allowed'):
+                    self.assertEqual(fetch(source, {})[0], b'{"items":[]}')
+                    self.assertEqual(sent, [source['url'], target])
+                else:
+                    with self.assertRaises(ValueError):
+                        fetch(source, {})
+                    self.assertEqual(sent, [source['url']])
     def test_old_raw_hash_does_not_create_a_false_migration_alert(self):
         sync(self.db, [self.source], self.fetcher(self.payload()))
         before = self.db.execute('SELECT changed_at FROM items').fetchone()[0]
